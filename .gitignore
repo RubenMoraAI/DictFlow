@@ -1,0 +1,34 @@
+# Secrets and local configuration
+.env
+config.json
+
+# App-generated data
+transcription_history.json
+usage_statistics.json
+logs/
+
+# Virtual environment and build
+.venv/
+venv/
+env/
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+
+# Node / cspell tooling
+node_modules/
+
+# Temporary audio
+*.wav
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

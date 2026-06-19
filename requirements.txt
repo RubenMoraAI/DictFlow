@@ -1,0 +1,8 @@
+keyboard
+sounddevice
+pyperclip
+pynput
+customtkinter
+google-genai
+python-dotenv
+keyring

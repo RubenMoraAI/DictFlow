@@ -1,0 +1,14 @@
+{
+  "name": "dictflow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Spell-checking tooling (cspell) for the DictFlow project.",
+  "scripts": {
+    "spell": "cspell \"**/*.{py,md}\"",
+    "spell:words": "cspell --words-only --unique \"**/*.{py,md}\""
+  },
+  "devDependencies": {
+    "@cspell/dict-es-es": "^2.3.0",
+    "cspell": "^8.13.0"
+  }
+}
