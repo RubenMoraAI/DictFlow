@@ -73,6 +73,20 @@ DEFAULT_SHORTCUTS = {
     "FYI": "for your information",
 }
 
+# Per-application formatting prompts. When an app is detected its prompt is
+# injected with priority over the master prompt's generic rules. Fully editable
+# from the "Formato por App" tab.
+DEFAULT_CONTEXT_PROMPTS = {
+    "VS Code": "Asume código o comentarios de código. Conserva términos técnicos y nombres de variables exactos (camelCase, snake_case según corresponda) y respeta la indentación. NO generes código salvo que se dicte sintaxis literal.",
+    "Cursor": "Asume código o comentarios de código. Conserva términos técnicos y nombres de variables exactos (camelCase, snake_case según corresponda) y respeta la indentación. NO generes código salvo que se dicte sintaxis literal.",
+    "Gmail": "Estructura formal de correo: un saludo inicial limpio, párrafos bien definidos y una despedida si el flujo del texto lo sugiere.",
+    "Correo": "Estructura formal de correo: un saludo inicial limpio, párrafos bien definidos y una despedida si el flujo del texto lo sugiere.",
+    "Slack": "Tono directo, profesional pero ágil. Usa saltos de línea inteligentes para separar ideas cortas. Sin saludos corporativos largos.",
+    "WhatsApp": "Tono directo y cercano, mensajes cortos y naturales, con saltos de línea entre ideas. Sin formalismos.",
+    "Notion": "Si suena a lista de tareas o lluvia de ideas, estructura con viñetas (*), listas numeradas o negritas para resaltar las ideas clave.",
+    "Notas": "Si suena a lista de tareas o lluvia de ideas, estructura con viñetas (*), listas numeradas o negritas para resaltar las ideas clave.",
+}
+
 # Plain transcription prompt used when the enhancement pipeline is disabled.
 TRANSCRIBE_INSTRUCTIONS = (
     "Transcribe el siguiente audio al español. "
@@ -91,9 +105,11 @@ class TextEnhancer:
         self.enabled = True
         self.master_prompt = DEFAULT_MASTER_PROMPT
         self.shortcuts = dict(DEFAULT_SHORTCUTS)
+        self.context_prompts = dict(DEFAULT_CONTEXT_PROMPTS)
         self.output_language = "auto"  # "auto" | "es" | "en"
         self.hotkey = "ctrl+shift+q"   # global record/stop shortcut (configurable)
         self.realtime_mode = False     # stream via the Live API (experimental)
+        self.input_device_name = None  # mic to record from (None = system default)
         self.model = "gemini-2.5-flash"
         # Reusable Gen AI client (created once per API key).
         self._client = None
@@ -133,9 +149,13 @@ class TextEnhancer:
                     self.master_prompt = config.get('master_prompt') or config.get('prompt') or DEFAULT_MASTER_PROMPT
                     self.model = config.get('gemini_model', self.model)
                     self.shortcuts = config.get('shortcuts', dict(DEFAULT_SHORTCUTS))
+                    # Merge defaults with saved overrides so new apps get a default.
+                    self.context_prompts = dict(DEFAULT_CONTEXT_PROMPTS)
+                    self.context_prompts.update(config.get('context_prompts', {}))
                     self.output_language = config.get('output_language', 'auto')
                     self.hotkey = config.get('hotkey', 'ctrl+shift+q')
                     self.realtime_mode = config.get('realtime_mode', False)
+                    self.input_device_name = config.get('input_device_name', None)
                     # Key inherited from old versions (plain text in config.json).
                     legacy_key = config.get('gemini_api_key') or None
             else:
@@ -177,9 +197,11 @@ class TextEnhancer:
                 'master_prompt': self.master_prompt,
                 'gemini_model': self.model,
                 'shortcuts': self.shortcuts,
+                'context_prompts': self.context_prompts,
                 'output_language': self.output_language,
                 'hotkey': self.hotkey,
                 'realtime_mode': self.realtime_mode,
+                'input_device_name': self.input_device_name,
             }
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
@@ -201,7 +223,8 @@ class TextEnhancer:
             self._client = genai.Client(api_key=self.api_key)
             if validate:
                 response = self._client.models.generate_content(
-                    model=self.model, contents="Responde únicamente: OK"
+                    model=self.model, contents="Responde únicamente: OK",
+                    config=self._gen_config(),
                 )
                 if not response or not response.text:
                     raise Exception("La API no devolvió respuesta en la prueba de generación.")
@@ -212,6 +235,27 @@ class TextEnhancer:
             logging.error(f"Error configuring the Gemini API: {e}")
             self.is_configured = False
             self.last_error = str(e)
+
+    def _gen_config(self):
+        """Generation config: disable 'thinking' so 2.5-flash returns the text
+        directly (faster, and avoids empty outputs when thinking dominates)."""
+        try:
+            return types.GenerateContentConfig(
+                thinking_config=types.ThinkingConfig(thinking_budget=0)
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _log_empty_response(response):
+        """Log why a 200 response carried no text (safety block, finish reason...)."""
+        try:
+            cands = getattr(response, "candidates", None)
+            pf = getattr(response, "prompt_feedback", None)
+            fr = getattr(cands[0], "finish_reason", None) if cands else None
+            logging.error(f"Respuesta Gemini vacía. finish_reason={fr}, prompt_feedback={pf}")
+        except Exception:
+            pass
 
     @staticmethod
     def _clean_model_output(text) -> str:
@@ -253,6 +297,14 @@ class TextEnhancer:
         ctx = context or "Sin contexto reconocido"
         parts.append(f"\nCONTEXTO ACTUAL: [{ctx}]")
 
+        # App-specific format (takes priority over the generic context rules).
+        cp = self.context_prompts.get(context) if context else None
+        if cp and cp.strip():
+            parts.append(
+                f"\nFORMATO ESPECÍFICO PARA ESTA APP ([{ctx}]) — TIENE PRIORIDAD sobre "
+                f"cualquier regla general de formato:\n{cp.strip()}"
+            )
+
         if self.shortcuts:
             lines = "\n".join(f'- "{trigger}" => "{expansion}"'
                               for trigger, expansion in self.shortcuts.items() if trigger)
@@ -282,7 +334,9 @@ class TextEnhancer:
         try:
             prompt = self._build_pipeline_prompt(context)
             response = self._client.models.generate_content(
-                model=self.model, contents=f"{prompt}\n\nTEXTO CRUDO A REFINAR:\n{text}"
+                model=self.model,
+                contents=f"{prompt}\n\nTEXTO CRUDO A REFINAR:\n{text}",
+                config=self._gen_config(),
             )
             enhanced_text = self._clean_model_output(response.text)
             return enhanced_text if enhanced_text else text
@@ -373,6 +427,35 @@ class TextEnhancer:
         """System instruction reused for the Live session (same pipeline rules)."""
         return self._build_pipeline_prompt(context)
 
+    # --- Per-application formatting prompts ---
+
+    def get_known_contexts(self) -> list:
+        """Ordered list of apps that can have a custom format."""
+        order = ["VS Code", "Cursor", "Gmail", "Correo", "Slack", "WhatsApp", "Notion", "Notas"]
+        extra = [k for k in self.context_prompts if k not in order]
+        return order + extra
+
+    def get_context_prompt(self, context) -> str:
+        return self.context_prompts.get(context, "")
+
+    def set_context_prompt(self, context: str, prompt: str) -> bool:
+        try:
+            self.context_prompts[context] = prompt
+            self._save_config()
+            return True
+        except Exception as e:
+            logging.error(f"Error guardando formato de app: {e}")
+            return False
+
+    # --- Input device (microphone) ---
+
+    def get_input_device_name(self):
+        return self.input_device_name
+
+    def set_input_device_name(self, name):
+        self.input_device_name = name or None
+        self._save_config()
+
     def set_model(self, model: str):
         self.model = model
         self._save_config()
@@ -407,10 +490,17 @@ class TextEnhancer:
                     prompt,
                     types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
                 ],
+                config=self._gen_config(),
             )
 
-            texto_transcrito = self._clean_model_output(response.text if response else "")
+            raw_text = None
+            try:
+                raw_text = response.text if response else None
+            except Exception as e:
+                logging.error(f"response.text no accesible: {e}")
+            texto_transcrito = self._clean_model_output(raw_text or "")
             if not texto_transcrito:
+                self._log_empty_response(response)
                 raise Exception("La API de Gemini no devolvió una respuesta válida.")
 
             logging.info("Transcription completed successfully.")

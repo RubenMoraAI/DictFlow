@@ -85,6 +85,57 @@ def _get_foreground_info_windows():
     return exe_name.lower(), title
 
 
+def get_active_monitor_work_area():
+    """Return the work area (left, top, right, bottom) of the monitor holding the
+    foreground window — i.e. the screen the user is currently working on. Falls
+    back to the monitor under the mouse cursor. None when unavailable.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        MONITOR_DEFAULTTONEAREST = 2
+
+        user32.GetForegroundWindow.restype = wintypes.HWND
+        user32.MonitorFromWindow.restype = ctypes.c_void_p
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+
+        hmon = None
+        hwnd = user32.GetForegroundWindow()
+        if hwnd:
+            hmon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+        if not hmon:
+            pt = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(pt))
+            hmon = user32.MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST)
+        if not hmon:
+            return None
+
+        class RECT(ctypes.Structure):
+            _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                        ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
+                        ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
+
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(MONITORINFO)]
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
+            return None
+        r = mi.rcWork  # excludes the taskbar
+        return (r.left, r.top, r.right, r.bottom)
+    except Exception as e:
+        logging.warning(f"Could not get the active monitor: {e}")
+        return None
+
+
 def detect_context(process_map=None, title_map=None):
     """Detect the focused application's context label, or None if unknown.
 

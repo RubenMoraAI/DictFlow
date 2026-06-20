@@ -15,7 +15,7 @@ from tkinter import ttk, messagebox
 import sys
 from transcription_history import TranscriptionHistory
 from text_enhancer import TextEnhancer
-from context_detector import detect_context
+from context_detector import detect_context, get_active_monitor_work_area
 from datetime import datetime, timedelta
 import json
 import customtkinter as ctk
@@ -114,6 +114,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.tabview.add("Estadísticas")
         self.tabview.add("Configuración")
         self.tabview.add("Atajos")
+        self.tabview.add("Formato por App")
         self.tabview.add("Modelo Gemini")
         self.tabview.add("Donar")
 
@@ -140,6 +141,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.setup_stats_tab()
         self.setup_config_tab()
         self.setup_shortcuts_tab()
+        self.setup_app_formats_tab()
         self.setup_model_tab()
         self.setup_donate_tab()
 
@@ -396,6 +398,26 @@ class SettingsWindow(ctk.CTkToplevel):
             variable=rt_var, command=toggle_rt
         ).pack(pady=(12, 0), padx=10, anchor="w")
 
+        # Microphone selection
+        mic_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        mic_frame.pack(fill="x", padx=10, pady=(10, 0))
+        ctk.CTkLabel(mic_frame, text="Micrófono:").pack(side="left", padx=(0, 10))
+        mics = self.app.listar_microfonos()
+        mic_names = [n for (_i, n) in mics]
+        DEFAULT_MIC = "Predeterminado (sistema)"
+        current_mic = self.text_enhancer.get_input_device_name()
+        mic_var = ctk.StringVar(
+            value=current_mic if current_mic in mic_names else DEFAULT_MIC
+        )
+
+        def on_mic(choice):
+            self.text_enhancer.set_input_device_name(
+                None if choice == DEFAULT_MIC else choice
+            )
+
+        ctk.CTkOptionMenu(mic_frame, values=[DEFAULT_MIC] + mic_names,
+                          variable=mic_var, command=on_mic, width=260).pack(side="left")
+
         def save_shortcuts():
             new_shortcuts = self._text_to_shortcuts(shortcuts_area.get("1.0", "end-1c"))
             self.text_enhancer.set_shortcuts(new_shortcuts)
@@ -404,6 +426,55 @@ class SettingsWindow(ctk.CTkToplevel):
             save_button.after(1000, lambda: save_button.configure(text="Guardar atajos", fg_color="#1f6aa5"))
 
         save_button = ctk.CTkButton(tab, text="Guardar atajos", command=save_shortcuts, fg_color="#1f6aa5")
+        save_button.pack(pady=10)
+
+    def setup_app_formats_tab(self):
+        tab = self.tabview.tab("Formato por App")
+
+        ctk.CTkLabel(tab, text="Formato por aplicación",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(10, 4))
+        ctk.CTkLabel(
+            tab,
+            text="Elige una app y define cómo se formatea el texto cuando dictas en ella.\n"
+                 "Tiene prioridad sobre las reglas generales. La app activa se detecta sola.",
+            font=("Arial", 11), text_color="#9CDCFE", justify="left"
+        ).pack(pady=(0, 8), padx=10)
+
+        top = ctk.CTkFrame(tab, fg_color="transparent")
+        top.pack(fill="x", padx=10)
+        ctk.CTkLabel(top, text="Aplicación:").pack(side="left", padx=(0, 10))
+
+        contexts = self.text_enhancer.get_known_contexts()
+        sel = ctk.StringVar(value=contexts[0])
+        state = {"current": contexts[0]}
+
+        frame = ctk.CTkFrame(tab)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        textbox = ctk.CTkTextbox(frame, font=("Consolas", 12))
+        textbox.pack(fill="both", expand=True, padx=10, pady=10)
+
+        def load(ctx):
+            textbox.delete("1.0", "end")
+            textbox.insert("1.0", self.text_enhancer.get_context_prompt(ctx) or "")
+
+        def on_select(choice):
+            # Auto-save the app we are leaving, then load the chosen one.
+            self.text_enhancer.set_context_prompt(state["current"], textbox.get("1.0", "end-1c").strip())
+            state["current"] = choice
+            load(choice)
+
+        ctk.CTkOptionMenu(top, values=contexts, variable=sel,
+                          command=on_select, width=200).pack(side="left")
+        load(contexts[0])
+
+        def save():
+            self.text_enhancer.set_context_prompt(sel.get(), textbox.get("1.0", "end-1c").strip())
+            save_button.configure(text="✓ Guardado", fg_color="#4CAF50")
+            save_button.after(1200, lambda: save_button.configure(
+                text="Guardar formato de esta app", fg_color="#1f6aa5"))
+
+        save_button = ctk.CTkButton(tab, text="Guardar formato de esta app",
+                                    command=save, fg_color="#1f6aa5")
         save_button.pack(pady=10)
 
     def setup_model_tab(self):
@@ -532,9 +603,11 @@ class DictFlowApp:
         self.ai_toggle.pack(pady=(1, 8))
         self.ai_toggle.bind("<Button-1>", self._on_ai_toggle_click)
 
+        # Tracks which monitor the bar is on, so it follows the active screen.
+        self._current_monitor_key = None
+
         self.grabando = False
         self.frames = []
-        self._audio_stream = None  # persistent input stream (reused to cut startup latency)
         self.ultima_pulsacion = 0
         self.DEBOUNCE_TIME = 0.5
         self.animacion_activa = False
@@ -556,12 +629,6 @@ class DictFlowApp:
         for widget in [self.main_frame, self.mode_label, self.canvas]:
             widget.bind("<ButtonPress-1>", self.start_drag)
             widget.bind("<B1-Motion>", self.do_drag)
-
-        # Pre-warm the audio device so the first recording starts instantly too.
-        try:
-            self._get_audio_stream()
-        except Exception as e:
-            logging.warning(f"No se pudo pre-inicializar el audio: {e}")
 
     def start_drag(self, event):
         self._offset_x = event.x
@@ -657,29 +724,75 @@ class DictFlowApp:
         except Exception as e:
             logging.warning(f"Error en actualizar_contexto: {e}")
 
+    def reubicar_en_monitor_activo(self, rect=None):
+        """Move the bar to the monitor of the active window (multi-monitor).
+
+        Only moves when the active monitor changed, so a manual drag within the
+        same screen is respected.
+        """
+        if not hasattr(self, 'root') or not self.root.winfo_exists():
+            return
+        if rect is None:
+            rect = get_active_monitor_work_area()
+        if not rect:
+            return
+        left, top, right, bottom = rect
+        key = (left, top)
+        if key == self._current_monitor_key:
+            return
+        self._current_monitor_key = key
+        try:
+            w = self.root.winfo_width() or 42
+            h = self.root.winfo_height() or 104
+            x = right - w - 22
+            y = top + ((bottom - top) - h) // 2
+            self.root.geometry(f"+{x}+{y}")
+        except Exception as e:
+            logging.warning(f"No se pudo reubicar la barra: {e}")
+
+    @staticmethod
+    def _mensaje_fallo(error_msg):
+        """Pick a friendly toast message: empty result vs. a real error."""
+        if error_msg and any(k in error_msg for k in ("no devolvió", "válida", "valida")):
+            return "🎤  No se detectó voz. Inténtalo de nuevo."
+        return "⚠  No se pudo transcribir. Revisa tu API Key, cuota y conexión."
+
     def mostrar_toast(self, mensaje, ms=3500):
-        """Show a small auto-dismissing notification above the bar (no focus steal)."""
+        """Show a sleek auto-dismissing notification beside the bar (no focus steal)."""
         if not hasattr(self, 'root') or not self.root.winfo_exists():
             return
         try:
             toast = ctk.CTkToplevel(self.root)
             toast.overrideredirect(True)
             toast.attributes('-topmost', True)
+            # Transparent corners (rounded pill) like the main bar.
             try:
-                toast.attributes('-alpha', 0.95)
+                toast.configure(fg_color='#010101')
+                toast.attributes('-transparentcolor', '#010101')
+                toast.attributes('-alpha', 0.97)
             except Exception:
-                pass
-            frame = ctk.CTkFrame(toast, fg_color="#3A1F1F", corner_radius=10)
-            frame.pack(fill="both", expand=True)
+                toast.attributes('-alpha', 0.95)
+
+            frame = ctk.CTkFrame(toast, fg_color='#1E1E22', corner_radius=16,
+                                 border_width=1, border_color='#3A3A42')
+            frame.pack(fill='both', expand=True)
             ctk.CTkLabel(
-                frame, text=mensaje, text_color="#FFCC00",
-                font=("Arial", 11), wraplength=300, justify="center"
-            ).pack(padx=14, pady=10)
+                frame, text=mensaje, text_color='#F3F4F6',
+                font=("Segoe UI", 11), wraplength=240, justify='left'
+            ).pack(padx=16, pady=12)
 
             toast.update_idletasks()
             w, h = toast.winfo_width(), toast.winfo_height()
-            x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
-            y = self.root.winfo_y() - h - 10
+            bx, by = self.root.winfo_x(), self.root.winfo_y()
+            bh = self.root.winfo_height()
+            x = bx - w - 12            # to the left of the vertical bar
+            y = by + (bh - h) // 2     # vertically centered with the bar
+            # Clamp inside the active monitor so it is never cut off.
+            rect = get_active_monitor_work_area()
+            if rect:
+                left, top, right, bottom = rect
+                x = max(left + 8, min(x, right - w - 8))
+                y = max(top + 8, min(y, bottom - h - 8))
             toast.geometry(f"+{x}+{y}")
             toast.after(ms, toast.destroy)
         except Exception as e:
@@ -747,29 +860,42 @@ class DictFlowApp:
         except Exception:
             return 0.0
 
-    def _get_audio_stream(self):
-        """Create the input stream once and reuse it to minimize startup latency."""
-        if self._audio_stream is None:
-            self._audio_stream = sd.RawInputStream(
-                samplerate=RATE, channels=CHANNELS, dtype='int16',
-                blocksize=CHUNK, latency='low'
-            )
-        return self._audio_stream
+    @staticmethod
+    def listar_microfonos():
+        """List selectable input devices (MME host API, friendly names)."""
+        mics = []
+        try:
+            for i, d in enumerate(sd.query_devices()):
+                ha = sd.query_hostapis(d['hostapi'])['name']
+                if d['max_input_channels'] > 0 and ha == 'MME' and 'Sound Mapper' not in d['name']:
+                    mics.append((i, d['name']))
+        except Exception as e:
+            logging.warning(f"No se pudieron listar micrófonos: {e}")
+        return mics
 
-    def _close_audio_stream(self):
-        """Stop and release the persistent input stream (e.g. on error or exit)."""
-        if self._audio_stream is not None:
-            try:
-                self._audio_stream.stop()
-                self._audio_stream.close()
-            except Exception:
-                pass
-            self._audio_stream = None
+    def _resolve_input_device(self):
+        """Resolve the configured mic name to a device index (None = default)."""
+        name = self.text_enhancer.get_input_device_name()
+        if not name:
+            return None
+        try:
+            for i, d in enumerate(sd.query_devices()):
+                if d['max_input_channels'] > 0 and d['name'] == name:
+                    return i
+        except Exception:
+            pass
+        return None
 
     def grabar_audio(self):
         logging.info("Iniciando grabación de audio")
+        stream = None
         try:
-            stream = self._get_audio_stream()
+            # A fresh stream per recording (reusing one across recordings
+            # captured silence on some devices).
+            stream = sd.RawInputStream(
+                samplerate=RATE, channels=CHANNELS, dtype='int16', blocksize=CHUNK,
+                device=self._resolve_input_device()
+            )
             stream.start()
             self.actualizar_estado("grabando", True)
             self.frames = []
@@ -782,12 +908,17 @@ class DictFlowApp:
                 self.frames.append(chunk_bytes)
                 self.current_level = self._audio_level(chunk_bytes)
             self.current_level = 0.0
-            stream.stop()  # keep the stream open for fast reuse next time
             logging.info("Grabación detenida.")
         except Exception as e:
             logging.error(f"Error durante la grabación: {e}")
-            self._close_audio_stream()  # drop a broken stream so it is recreated
             return None
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
 
         if not self.frames:
             logging.warning("No se capturaron frames de audio.")
@@ -888,6 +1019,11 @@ class DictFlowApp:
         logging.info(f"Contexto detectado: {contexto}")
         self.root.after(0, self.actualizar_contexto, contexto)
 
+        # Move the bar to the monitor where the active window lives (captured
+        # here, while the target app is still in the foreground).
+        monitor_rect = get_active_monitor_work_area()
+        self.root.after(0, self.reubicar_en_monitor_activo, monitor_rect)
+
         if self.text_enhancer.get_realtime_mode():
             self._procesar_realtime(contexto)
         else:
@@ -920,8 +1056,7 @@ class DictFlowApp:
             error_msg = str(e)
 
         if error_msg or not texto_final.strip():
-            self.root.after(0, self.mostrar_toast,
-                            "⚠ No se pudo transcribir. Revisa tu API Key, cuota y conexión.")
+            self.root.after(0, self.mostrar_toast, self._mensaje_fallo(error_msg))
         else:
             duracion = time.time() - tiempo_inicio
             self.history.add_transcription(texto_final, duracion, used_gemini, "gemini_only")
@@ -963,10 +1098,10 @@ class DictFlowApp:
 
         if lt.error:
             logging.error(f"Live error: {lt.error}")
-            self.root.after(0, self.mostrar_toast, "⚠ Error en tiempo real. Revisa tu conexión.")
+            self.root.after(0, self.mostrar_toast, "⚠  Error en tiempo real. Revisa tu conexión.")
             return
         if not raw.strip():
-            self.root.after(0, self.mostrar_toast, "⚠ Sin transcripción (tiempo real).")
+            self.root.after(0, self.mostrar_toast, "🎤  No se detectó voz. Inténtalo de nuevo.")
             return
 
         # Refine the raw real-time transcript with the usual pipeline.
@@ -984,8 +1119,12 @@ class DictFlowApp:
     def _grabar_streaming(self, lt):
         """Recording loop that feeds chunks to the Live transcriber (no WAV)."""
         logging.info("Iniciando grabación en tiempo real")
+        stream = None
         try:
-            stream = self._get_audio_stream()
+            stream = sd.RawInputStream(
+                samplerate=RATE, channels=CHANNELS, dtype='int16', blocksize=CHUNK,
+                device=self._resolve_input_device()
+            )
             stream.start()
             while self.grabando:
                 data, overflowed = stream.read(CHUNK)
@@ -995,11 +1134,16 @@ class DictFlowApp:
                 self.current_level = self._audio_level(chunk)
                 lt.feed(chunk)
             self.current_level = 0.0
-            stream.stop()
             logging.info("Grabación en tiempo real detenida.")
         except Exception as e:
             logging.error(f"Error durante la grabación en tiempo real: {e}")
-            self._close_audio_stream()
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
 
     def show_error_message(self, message):
         messagebox.showerror("Error", message)
@@ -1053,7 +1197,6 @@ class DictFlowApp:
                 keyboard.remove_hotkey(self.hotkey)
             if getattr(self, '_release_hook', None):
                 keyboard.unhook(self._release_hook)
-            self._close_audio_stream()
 
             if self.settings_window and self.settings_window.winfo_exists():
                 self.settings_window.destroy()
