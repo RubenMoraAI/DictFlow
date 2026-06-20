@@ -88,26 +88,26 @@ If you just want to use the application without dealing with Python installation
 If you cloned the repo (Option 1) you can produce your own `DictFlow.exe`:
 
 ```powershell
-.\build_exe.ps1
+.\scripts\build_exe.ps1
 ```
 
 This installs [PyInstaller](https://pyinstaller.org) and bundles everything into
 a single file at `dist\DictFlow.exe`. (Under the hood it runs
 `pyinstaller --onefile --windowed --name DictFlow --collect-all customtkinter
 --collect-all sounddevice --collect-all keyring mainsoft.py`.) The window/app icon
-comes from `dictflow.ico`, which you can regenerate with `python generate_icon.py`.
+comes from `assets/dictflow.ico`; regenerate it with `python scripts\generate_icon.py`.
 
 ### Start Automatically with Windows
 
 To have DictFlow launch every time you log in:
 
 ```powershell
-.\install.ps1
+.\scripts\install.ps1
 ```
 
 This copies the executable to `%LOCALAPPDATA%\DictFlow` and adds a shortcut to your
-Startup folder. To turn it off, run `.\install.ps1 -Remove` (or disable *DictFlow*
-under **Task Manager → Startup apps**).
+Startup folder. To turn it off, run `.\scripts\install.ps1 -Remove` (or disable
+*DictFlow* under **Task Manager → Startup apps**).
 
 ## 🎹 Using the App (Controls)
 
@@ -171,6 +171,7 @@ Here is a description of the most important files and their functions:
 *   `text_enhancer.py`: Contains all the logic for processing and enhancing the transcribed text (adding punctuation, capitalization, etc.).
 *   `transcription_history.py`: Manages the transcription history by saving and retrieving data.
 *   `context_detector.py`: Detects the focused application (Windows UI Automation) so the pipeline can adapt the output style.
+*   `live_transcriber.py`: Real-time transcription via the Gemini **Live API** (experimental; enable it in **Configuración → Atajos → Modo tiempo real**).
 
 ### Secondary and Generated Files
 
@@ -182,9 +183,9 @@ Here is a description of the most important files and their functions:
 *   `transcription_history.json`: A JSON-format database where the history of all transcriptions is stored.
 *   `usage_statistics.json`: A JSON file that saves data on how the application is used.
 *   `logs/dictflow.log`: A log file that records information about events or errors that may occur during execution.
-*   `build_exe.ps1`: Script that builds the standalone `DictFlow.exe` (see Option 3).
-*   `install.ps1`: Installs the exe and enables auto-start on Windows login.
-*   `generate_icon.py` / `dictflow.ico`: Generates and stores the app icon.
+*   `scripts/build_exe.ps1`: Builds the standalone `DictFlow.exe` (see Option 3).
+*   `scripts/install.ps1`: Installs the exe and enables auto-start on Windows login.
+*   `scripts/generate_icon.py` / `assets/dictflow.ico`: Generates and stores the app icon.
 *   `dist/`: The folder where the built **executable file (`DictFlow.exe`)** is placed.
 *   `.venv/`: The folder for the Python virtual environment (if created).
 

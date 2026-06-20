@@ -2,10 +2,13 @@
 # It copies the built exe to %LOCALAPPDATA%\DictFlow and adds a shortcut to the
 # Startup folder (transparent — you can disable it from Task Manager > Startup).
 #
-# Usage:
-#   .\install.ps1          install + enable autostart (and launch now)
-#   .\install.ps1 -Remove  remove autostart and the installed copy
+# Usage (run from anywhere):
+#   .\scripts\install.ps1          install + enable autostart (and launch now)
+#   .\scripts\install.ps1 -Remove  remove autostart and the installed copy
 param([switch]$Remove)
+
+# Always operate from the repository root (one level above this script).
+Set-Location (Split-Path -Parent $PSScriptRoot)
 
 $installDir = Join-Path $env:LOCALAPPDATA "DictFlow"
 $installExe = Join-Path $installDir "DictFlow.exe"

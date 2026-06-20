@@ -385,6 +385,17 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkButton(hk_frame, text="Cambiar", width=90, command=cambiar_hotkey,
                       fg_color="#1f6aa5").pack(side="left", padx=(10, 0))
 
+        # Real-time (Live API) mode toggle
+        rt_var = ctk.BooleanVar(value=self.text_enhancer.get_realtime_mode())
+
+        def toggle_rt():
+            self.text_enhancer.set_realtime_mode(rt_var.get())
+
+        ctk.CTkCheckBox(
+            tab, text="Modo tiempo real (Live API · experimental)",
+            variable=rt_var, command=toggle_rt
+        ).pack(pady=(12, 0), padx=10, anchor="w")
+
         def save_shortcuts():
             new_shortcuts = self._text_to_shortcuts(shortcuts_area.get("1.0", "end-1c"))
             self.text_enhancer.set_shortcuts(new_shortcuts)
@@ -674,6 +685,55 @@ class DictFlowApp:
         except Exception as e:
             logging.warning(f"No se pudo mostrar el aviso: {e}")
 
+    # --- Live (real-time) transcript preview ---
+
+    def _show_live_preview(self):
+        """Create the live-transcript preview window next to the bar."""
+        if getattr(self, '_live_preview', None) and self._live_preview.winfo_exists():
+            return
+        try:
+            self._live_preview = ctk.CTkToplevel(self.root)
+            self._live_preview.overrideredirect(True)
+            self._live_preview.attributes('-topmost', True)
+            frame = ctk.CTkFrame(self._live_preview, fg_color="#161618",
+                                 corner_radius=14, border_width=1, border_color="#2A2A30")
+            frame.pack(fill="both", expand=True)
+            self._live_label = ctk.CTkLabel(
+                frame, text="Escuchando…", text_color="#E5E7EB",
+                font=("Segoe UI", 12), wraplength=300, justify="left"
+            )
+            self._live_label.pack(padx=14, pady=10)
+            self._position_live_preview()
+        except Exception as e:
+            logging.warning(f"No se pudo mostrar el preview en vivo: {e}")
+
+    def _position_live_preview(self):
+        try:
+            self._live_preview.update_idletasks()
+            w = self._live_preview.winfo_width()
+            h = self._live_preview.winfo_height()
+            x = self.root.winfo_x() - w - 12  # to the left of the vertical bar
+            y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+            self._live_preview.geometry(f"+{max(8, x)}+{max(8, y)}")
+        except Exception:
+            pass
+
+    def _update_live_preview(self, text):
+        try:
+            if getattr(self, '_live_preview', None) and self._live_preview.winfo_exists():
+                self._live_label.configure(text=text or "Escuchando…")
+                self._position_live_preview()
+        except Exception:
+            pass
+
+    def _hide_live_preview(self):
+        try:
+            if getattr(self, '_live_preview', None) and self._live_preview.winfo_exists():
+                self._live_preview.destroy()
+        except Exception:
+            pass
+        self._live_preview = None
+
     @staticmethod
     def _audio_level(chunk_bytes):
         """Approximate normalized RMS level (0..1) of an int16 PCM chunk."""
@@ -828,45 +888,118 @@ class DictFlowApp:
         logging.info(f"Contexto detectado: {contexto}")
         self.root.after(0, self.actualizar_contexto, contexto)
 
+        if self.text_enhancer.get_realtime_mode():
+            self._procesar_realtime(contexto)
+        else:
+            self._procesar_batch(contexto)
+
+        self.actualizar_estado("inactivo", False)
+
+    def _procesar_batch(self, contexto):
+        """Record fully, then transcribe + refine in a single Gemini call."""
         tiempo_inicio = time.time()
         audio_file = self.grabar_audio()
 
-        if audio_file:
-            texto_final = ""
-            used_gemini = False
-            error_msg = None
-            try:
-                # Transcription + refinement pipeline in a single Gemini call.
-                aplicar_mejora = self.use_enhancer.get()
-                if aplicar_mejora:
-                    logging.info("Transcribiendo y refinando texto...")
-                texto_final = self.text_enhancer.transcribe_audio(
-                    audio_file, context=contexto, enhance=aplicar_mejora
-                )
-                used_gemini = True
-
-            except Exception as e:
-                logging.error(f"Error en la transcripción con Gemini: {e}")
-                error_msg = str(e)
-
-            if error_msg or not texto_final.strip():
-                # On failure, never paste anything into the active app: show a toast.
-                self.root.after(0, self.mostrar_toast,
-                                "⚠ No se pudo transcribir. Revisa tu API Key, cuota y conexión.")
-            else:
-                duracion = time.time() - tiempo_inicio
-                self.history.add_transcription(texto_final, duracion, used_gemini, "gemini_only")
-                self.root.after(0, self.pegar_texto, texto_final)
-
-            try:
-                os.unlink(audio_file)
-                logging.info(f"Archivo temporal {audio_file} eliminado.")
-            except Exception as e:
-                logging.error(f"Error al eliminar archivo temporal: {e}")
-        else:
+        if not audio_file:
             logging.warning("No se generó archivo de audio para transcribir.")
+            return
 
-        self.actualizar_estado("inactivo", False)
+        texto_final = ""
+        used_gemini = False
+        error_msg = None
+        try:
+            aplicar_mejora = self.use_enhancer.get()
+            if aplicar_mejora:
+                logging.info("Transcribiendo y refinando texto...")
+            texto_final = self.text_enhancer.transcribe_audio(
+                audio_file, context=contexto, enhance=aplicar_mejora
+            )
+            used_gemini = True
+        except Exception as e:
+            logging.error(f"Error en la transcripción con Gemini: {e}")
+            error_msg = str(e)
+
+        if error_msg or not texto_final.strip():
+            self.root.after(0, self.mostrar_toast,
+                            "⚠ No se pudo transcribir. Revisa tu API Key, cuota y conexión.")
+        else:
+            duracion = time.time() - tiempo_inicio
+            self.history.add_transcription(texto_final, duracion, used_gemini, "gemini_only")
+            self.root.after(0, self.pegar_texto, texto_final)
+
+        try:
+            os.unlink(audio_file)
+            logging.info(f"Archivo temporal {audio_file} eliminado.")
+        except Exception as e:
+            logging.error(f"Error al eliminar archivo temporal: {e}")
+
+    def _procesar_realtime(self, contexto):
+        """Stream audio to the Live API and show the transcript while speaking."""
+        try:
+            from live_transcriber import LiveTranscriber
+        except Exception as e:
+            logging.error(f"Live no disponible, usando batch: {e}")
+            self._procesar_batch(contexto)
+            return
+
+        self._live_text = ""
+
+        def on_text(piece):
+            self._live_text += piece
+            self.root.after(0, self._update_live_preview, self._live_text)
+
+        lt = LiveTranscriber(
+            self.text_enhancer.api_key,
+            self.text_enhancer.get_live_system_instruction(contexto),
+            on_text=on_text,
+        )
+        self.root.after(0, self._show_live_preview)
+        lt.start()
+
+        self.actualizar_estado("grabando", True)
+        self._grabar_streaming(lt)
+        raw = lt.stop()
+        self.root.after(0, self._hide_live_preview)
+
+        if lt.error:
+            logging.error(f"Live error: {lt.error}")
+            self.root.after(0, self.mostrar_toast, "⚠ Error en tiempo real. Revisa tu conexión.")
+            return
+        if not raw.strip():
+            self.root.after(0, self.mostrar_toast, "⚠ Sin transcripción (tiempo real).")
+            return
+
+        # Refine the raw real-time transcript with the usual pipeline.
+        final = raw
+        if self.use_enhancer.get():
+            try:
+                final = self.text_enhancer.enhance_text(raw, context=contexto)
+            except Exception as e:
+                logging.error(f"Error al refinar (live): {e}")
+                final = raw
+
+        self.history.add_transcription(final, 0.0, True, "gemini_live")
+        self.root.after(0, self.pegar_texto, final)
+
+    def _grabar_streaming(self, lt):
+        """Recording loop that feeds chunks to the Live transcriber (no WAV)."""
+        logging.info("Iniciando grabación en tiempo real")
+        try:
+            stream = self._get_audio_stream()
+            stream.start()
+            while self.grabando:
+                data, overflowed = stream.read(CHUNK)
+                if overflowed:
+                    logging.warning("Desbordamiento del buffer de audio (overflow, live).")
+                chunk = bytes(data)
+                self.current_level = self._audio_level(chunk)
+                lt.feed(chunk)
+            self.current_level = 0.0
+            stream.stop()
+            logging.info("Grabación en tiempo real detenida.")
+        except Exception as e:
+            logging.error(f"Error durante la grabación en tiempo real: {e}")
+            self._close_audio_stream()
 
     def show_error_message(self, message):
         messagebox.showerror("Error", message)

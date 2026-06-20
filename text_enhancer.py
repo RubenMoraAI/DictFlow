@@ -93,6 +93,7 @@ class TextEnhancer:
         self.shortcuts = dict(DEFAULT_SHORTCUTS)
         self.output_language = "auto"  # "auto" | "es" | "en"
         self.hotkey = "ctrl+shift+q"   # global record/stop shortcut (configurable)
+        self.realtime_mode = False     # stream via the Live API (experimental)
         self.model = "gemini-2.5-flash"
         # Reusable Gen AI client (created once per API key).
         self._client = None
@@ -134,6 +135,7 @@ class TextEnhancer:
                     self.shortcuts = config.get('shortcuts', dict(DEFAULT_SHORTCUTS))
                     self.output_language = config.get('output_language', 'auto')
                     self.hotkey = config.get('hotkey', 'ctrl+shift+q')
+                    self.realtime_mode = config.get('realtime_mode', False)
                     # Key inherited from old versions (plain text in config.json).
                     legacy_key = config.get('gemini_api_key') or None
             else:
@@ -177,6 +179,7 @@ class TextEnhancer:
                 'shortcuts': self.shortcuts,
                 'output_language': self.output_language,
                 'hotkey': self.hotkey,
+                'realtime_mode': self.realtime_mode,
             }
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
@@ -356,6 +359,19 @@ class TextEnhancer:
     def set_hotkey(self, hotkey: str):
         self.hotkey = hotkey
         self._save_config()
+
+    # --- Real-time (Live API) mode ---
+
+    def get_realtime_mode(self) -> bool:
+        return self.realtime_mode
+
+    def set_realtime_mode(self, enabled: bool):
+        self.realtime_mode = enabled
+        self._save_config()
+
+    def get_live_system_instruction(self, context=None) -> str:
+        """System instruction reused for the Live session (same pipeline rules)."""
+        return self._build_pipeline_prompt(context)
 
     def set_model(self, model: str):
         self.model = model

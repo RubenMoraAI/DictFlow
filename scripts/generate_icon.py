@@ -1,8 +1,9 @@
 """Generate dictflow.ico — a modern app icon matching the floating bar.
 
 A dark rounded "squircle" with a subtle gradient and a centered audio
-equalizer in a cyan-to-violet gradient. Run: python generate_icon.py
+equalizer in a cyan-to-violet gradient. Run: python scripts/generate_icon.py
 """
+import os
 from PIL import Image, ImageDraw
 
 SIZE = 256
@@ -46,8 +47,9 @@ for i in range(n):
         radius=bar_w // 2, fill=color,
     )
 
-icon.save(
-    "dictflow.ico",
-    sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+out = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "dictflow.ico"
 )
-print("dictflow.ico generated.")
+os.makedirs(os.path.dirname(out), exist_ok=True)
+icon.save(out, sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+print(f"{out} generated.")
