@@ -687,7 +687,7 @@ class DictFlowApp:
         self.modo = "dictado"
         self.hotkey = self.text_enhancer.get_hotkey()
         self.command_hotkey = self.text_enhancer.get_command_hotkey()
-        self._registrar_hotkey('dict', self.hotkey, self.toggle_grabacion)
+        self._registrar_hotkey('dict', self.hotkey, self.toggle_grabacion, suppress=True)
         self._registrar_hotkey('cmd', self.command_hotkey, self.toggle_comando, suppress=True)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.animar_puntos()
@@ -1224,7 +1224,7 @@ class DictFlowApp:
             return False
         try:
             self.hotkey = nuevo_hotkey
-            self._registrar_hotkey('dict', nuevo_hotkey, self.toggle_grabacion)
+            self._registrar_hotkey('dict', nuevo_hotkey, self.toggle_grabacion, suppress=True)
             self.text_enhancer.set_hotkey(nuevo_hotkey)
             return True
         except Exception as e:
