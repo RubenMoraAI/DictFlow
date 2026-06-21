@@ -62,6 +62,7 @@ Una vez respetada la REGLA DE ORO, aplica este pipeline en un solo paso:
 
 4. RESTRICCIONES CRÍTICAS:
    - NUNCA respondas con introducciones tipo "Aquí tienes el texto limpio:" o "Procesado:".
+   - NUNCA incluyas marcas de tiempo ni timestamps (p. ej. 00:00, 00:02): transcribe solo las palabras.
    - Devuelve ÚNICAMENTE el texto final transcrito y formateado, listo para copiar y pegar.
    - No inventes información que no esté en el audio; solo dale formato y estilo a lo que realmente se dijo.
 """
@@ -110,6 +111,11 @@ class TextEnhancer:
         self.hotkey = "ctrl+shift+q"   # global record/stop shortcut (configurable)
         self.realtime_mode = False     # stream via the Live API (experimental)
         self.input_device_name = None  # mic to record from (None = system default)
+        self.vocabulary = []           # custom terms to transcribe correctly
+        self.auto_stop_silence = True  # auto-stop recording after silence
+        self.silence_seconds = 2.5     # seconds of silence that auto-stops
+        self.sound_feedback = True     # subtle beep on start/stop
+        self.command_hotkey = "ctrl+shift+e"  # transform-selected-text shortcut
         self.model = "gemini-2.5-flash"
         # Reusable Gen AI client (created once per API key).
         self._client = None
@@ -156,6 +162,11 @@ class TextEnhancer:
                     self.hotkey = config.get('hotkey', 'ctrl+shift+q')
                     self.realtime_mode = config.get('realtime_mode', False)
                     self.input_device_name = config.get('input_device_name', None)
+                    self.vocabulary = config.get('vocabulary', [])
+                    self.auto_stop_silence = config.get('auto_stop_silence', True)
+                    self.silence_seconds = config.get('silence_seconds', 2.5)
+                    self.sound_feedback = config.get('sound_feedback', True)
+                    self.command_hotkey = config.get('command_hotkey', 'ctrl+shift+e')
                     # Key inherited from old versions (plain text in config.json).
                     legacy_key = config.get('gemini_api_key') or None
             else:
@@ -202,6 +213,11 @@ class TextEnhancer:
                 'hotkey': self.hotkey,
                 'realtime_mode': self.realtime_mode,
                 'input_device_name': self.input_device_name,
+                'vocabulary': self.vocabulary,
+                'auto_stop_silence': self.auto_stop_silence,
+                'silence_seconds': self.silence_seconds,
+                'sound_feedback': self.sound_feedback,
+                'command_hotkey': self.command_hotkey,
             }
             with open(self.config_file, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
@@ -281,14 +297,29 @@ class TextEnhancer:
                     for key in ('transcription', 'transcripcion', 'text', 'texto',
                                 'output', 'result', 'content'):
                         if isinstance(data.get(key), str):
-                            return data[key].strip()
-                    if len(data) == 1:
-                        only = next(iter(data.values()))
-                        if isinstance(only, str):
-                            return only.strip()
+                            t = data[key].strip()
+                            break
+                    else:
+                        if len(data) == 1:
+                            only = next(iter(data.values()))
+                            if isinstance(only, str):
+                                t = only.strip()
             except (json.JSONDecodeError, ValueError):
                 pass
-        return t
+
+        return TextEnhancer._strip_timestamps(t)
+
+    @staticmethod
+    def _strip_timestamps(t: str) -> str:
+        """Remove transcription timestamps the model sometimes injects
+        (e.g. 00:00, 00:02, [0:02]) without touching real spoken times like 3:30."""
+        # Leading-zero MM:SS markers (almost always artifacts), with optional brackets.
+        t = re.sub(r'[\[\(]?\b0\d:\d{2}\b[\]\)]?', '', t)
+        # Timestamps glued directly to a word/letter (e.g. "texto00:02").
+        t = re.sub(r'(?<=[^\W\d_])\d{1,2}:\d{2}\b', '', t)
+        # Stray ":00" fragments (colon + 2 digits not preceded by a digit).
+        t = re.sub(r'\s*(?<!\d):\d{2}\b', '', t)
+        return re.sub(r'[ \t]{2,}', ' ', t).strip()
 
     def _build_pipeline_prompt(self, context=None) -> str:
         """Assemble the full instruction: master rules + context + shortcut glossary."""
@@ -304,6 +335,14 @@ class TextEnhancer:
                 f"\nFORMATO ESPECÍFICO PARA ESTA APP ([{ctx}]) — TIENE PRIORIDAD sobre "
                 f"cualquier regla general de formato:\n{cp.strip()}"
             )
+
+        if self.vocabulary:
+            terms = ", ".join(t.strip() for t in self.vocabulary if t.strip())
+            if terms:
+                parts.append(
+                    "\nVOCABULARIO: si en el audio aparecen estos nombres o términos, "
+                    "escríbelos EXACTAMENTE con esta ortografía:\n" + terms
+                )
 
         if self.shortcuts:
             lines = "\n".join(f'- "{trigger}" => "{expansion}"'
@@ -455,6 +494,85 @@ class TextEnhancer:
     def set_input_device_name(self, name):
         self.input_device_name = name or None
         self._save_config()
+
+    # --- Custom vocabulary ---
+
+    def get_vocabulary(self) -> list:
+        return self.vocabulary
+
+    def set_vocabulary(self, terms: list):
+        self.vocabulary = [t.strip() for t in terms if t.strip()]
+        self._save_config()
+
+    # --- Auto-stop on silence / sound feedback / command hotkey ---
+
+    def get_auto_stop_silence(self) -> bool:
+        return self.auto_stop_silence
+
+    def set_auto_stop_silence(self, enabled: bool):
+        self.auto_stop_silence = enabled
+        self._save_config()
+
+    def get_silence_seconds(self) -> float:
+        return self.silence_seconds
+
+    def get_sound_feedback(self) -> bool:
+        return self.sound_feedback
+
+    def set_sound_feedback(self, enabled: bool):
+        self.sound_feedback = enabled
+        self._save_config()
+
+    def get_command_hotkey(self) -> str:
+        return self.command_hotkey
+
+    def set_command_hotkey(self, hotkey: str):
+        self.command_hotkey = hotkey
+        self._save_config()
+
+    def transform_with_audio(self, selected_text: str, audio_file_path: str) -> str:
+        """Apply a spoken instruction (in the audio) to `selected_text`.
+
+        Used by the 'voice command on selected text' feature: the audio is the
+        instruction (e.g. "translate to English", "make it shorter") and the
+        result replaces the selection.
+        """
+        if not self.is_configured or self._client is None:
+            raise Exception("API de Gemini no configurada.")
+        try:
+            # Step 1: transcribe the spoken instruction (sending the order + the
+            # text together makes the model append the order instead of running it).
+            with open(audio_file_path, 'rb') as f:
+                audio_bytes = f.read()
+            tr = self._client.models.generate_content(
+                model=self.model,
+                contents=[
+                    "Transcribe literalmente la orden hablada en este audio. "
+                    "Devuelve solo la orden, sin nada más.",
+                    types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav"),
+                ],
+                config=self._gen_config(),
+            )
+            instruction = self._clean_model_output(tr.text if tr else "").strip()
+            if not instruction:
+                return selected_text
+
+            # Step 2: apply the instruction to the text (both clearly labeled).
+            prompt = (
+                "Aplica la siguiente ORDEN al TEXTO y devuelve ÚNICAMENTE el texto "
+                "resultante (sin la orden, sin comillas, sin explicaciones, sin "
+                "introducciones, sin marcas de tiempo).\n"
+                f"ORDEN: {instruction}\n\nTEXTO:\n{selected_text}"
+            )
+            response = self._client.models.generate_content(
+                model=self.model, contents=prompt, config=self._gen_config()
+            )
+            result = self._clean_model_output(response.text if response else "")
+            logging.info(f"Comando aplicado. Orden: {instruction[:40]!r}")
+            return result if result else selected_text
+        except Exception as e:
+            logging.error(f"Error en transform_with_audio: {e}")
+            raise Exception(f"Error al transformar el texto: {e}")
 
     def set_model(self, model: str):
         self.model = model

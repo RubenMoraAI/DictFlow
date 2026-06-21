@@ -115,6 +115,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.tabview.add("Configuración")
         self.tabview.add("Atajos")
         self.tabview.add("Formato por App")
+        self.tabview.add("Vocabulario")
         self.tabview.add("Modelo Gemini")
         self.tabview.add("Donar")
 
@@ -142,6 +143,7 @@ class SettingsWindow(ctk.CTkToplevel):
         self.setup_config_tab()
         self.setup_shortcuts_tab()
         self.setup_app_formats_tab()
+        self.setup_vocabulary_tab()
         self.setup_model_tab()
         self.setup_donate_tab()
 
@@ -418,6 +420,41 @@ class SettingsWindow(ctk.CTkToplevel):
         ctk.CTkOptionMenu(mic_frame, values=[DEFAULT_MIC] + mic_names,
                           variable=mic_var, command=on_mic, width=260).pack(side="left")
 
+        # Auto-stop on silence + sound feedback
+        auto_var = ctk.BooleanVar(value=self.text_enhancer.get_auto_stop_silence())
+        ctk.CTkCheckBox(
+            tab, text="Auto-stop: parar al detectar silencio",
+            variable=auto_var,
+            command=lambda: self.text_enhancer.set_auto_stop_silence(auto_var.get())
+        ).pack(pady=(10, 0), padx=10, anchor="w")
+
+        sound_var = ctk.BooleanVar(value=self.text_enhancer.get_sound_feedback())
+        ctk.CTkCheckBox(
+            tab, text="Sonido al iniciar/parar la grabación",
+            variable=sound_var,
+            command=lambda: self.text_enhancer.set_sound_feedback(sound_var.get())
+        ).pack(pady=(6, 0), padx=10, anchor="w")
+
+        # Command (transform selected text) hotkey
+        ch_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        ch_frame.pack(fill="x", padx=10, pady=(10, 0))
+        ctk.CTkLabel(ch_frame, text="Atajo de comando (transformar selección):").pack(side="left", padx=(0, 10))
+        ch_entry = ctk.CTkEntry(ch_frame, width=150)
+        ch_entry.insert(0, self.text_enhancer.get_command_hotkey())
+        ch_entry.pack(side="left", padx=(0, 10))
+        ch_status = ctk.CTkLabel(ch_frame, text="", text_color="#9CDCFE", font=("Arial", 10))
+        ch_status.pack(side="left", padx=(8, 0))
+
+        def cambiar_ch():
+            nuevo = ch_entry.get().strip().lower()
+            if self.app.cambiar_command_hotkey(nuevo):
+                ch_status.configure(text=f"✓ {nuevo}", text_color="#4CAF50")
+            else:
+                ch_status.configure(text="✗ inválido", text_color="#F44336")
+
+        ctk.CTkButton(ch_frame, text="Cambiar", width=90, command=cambiar_ch,
+                      fg_color="#1f6aa5").pack(side="left", padx=(10, 0))
+
         def save_shortcuts():
             new_shortcuts = self._text_to_shortcuts(shortcuts_area.get("1.0", "end-1c"))
             self.text_enhancer.set_shortcuts(new_shortcuts)
@@ -475,6 +512,33 @@ class SettingsWindow(ctk.CTkToplevel):
 
         save_button = ctk.CTkButton(tab, text="Guardar formato de esta app",
                                     command=save, fg_color="#1f6aa5")
+        save_button.pack(pady=10)
+
+    def setup_vocabulary_tab(self):
+        tab = self.tabview.tab("Vocabulario")
+        ctk.CTkLabel(tab, text="Vocabulario personalizado",
+                     font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(10, 4))
+        ctk.CTkLabel(
+            tab,
+            text="Un término por línea: nombres propios, marcas, jerga o tecnicismos.\n"
+                 "Se le indican al modelo para que los transcriba con la ortografía exacta.",
+            font=("Arial", 11), text_color="#9CDCFE", justify="left"
+        ).pack(pady=(0, 8), padx=10)
+
+        frame = ctk.CTkFrame(tab)
+        frame.pack(fill="both", expand=True, padx=10, pady=10)
+        textbox = ctk.CTkTextbox(frame, font=("Consolas", 12))
+        textbox.pack(fill="both", expand=True, padx=10, pady=10)
+        textbox.insert("1.0", "\n".join(self.text_enhancer.get_vocabulary()))
+
+        def save():
+            terms = [t.strip() for t in textbox.get("1.0", "end-1c").splitlines() if t.strip()]
+            self.text_enhancer.set_vocabulary(terms)
+            save_button.configure(text="✓ Guardado", fg_color="#4CAF50")
+            save_button.after(1200, lambda: save_button.configure(
+                text="Guardar vocabulario", fg_color="#1f6aa5"))
+
+        save_button = ctk.CTkButton(tab, text="Guardar vocabulario", command=save, fg_color="#1f6aa5")
         save_button.pack(pady=10)
 
     def setup_model_tab(self):
@@ -564,14 +628,14 @@ class DictFlowApp:
         self._pill_bg = '#161618'
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
-        window_width = 42
-        window_height = 104
+        window_width = 36
+        window_height = 142
         x = screen_width - window_width - 22
         y = (screen_height - window_height) // 2
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
         self.main_frame = ctk.CTkFrame(
-            self.root, fg_color=self._pill_bg, corner_radius=20,
+            self.root, fg_color=self._pill_bg, corner_radius=16,
             border_width=1, border_color='#2A2A30'
         )
         self.main_frame.pack(fill='both', expand=True)
@@ -581,10 +645,10 @@ class DictFlowApp:
             self.main_frame, text="·", font=("Segoe UI", 9, "bold"),
             text_color='#7DD3FC', fg_color=self._pill_bg
         )
-        self.mode_label.pack(pady=(8, 1))
+        self.mode_label.pack(pady=(12, 2))
 
         # Audio-reactive equalizer (center)
-        self.eq_w, self.eq_h = 28, 50
+        self.eq_w, self.eq_h = 24, 54
         self.num_bars = 5
         self.bar_levels = [0.14] * self.num_bars
         self.current_level = 0.0
@@ -592,16 +656,20 @@ class DictFlowApp:
             self.main_frame, width=self.eq_w, height=self.eq_h,
             bg=self._pill_bg, highlightthickness=0, bd=0
         )
-        self.canvas.pack(pady=1)
+        self.canvas.pack(pady=2)
 
-        # AI enhancement toggle (bottom)
+        # AI enhancement toggle (bottom) — sparkles, gold when on, dim when off.
         self.use_enhancer = ctk.BooleanVar(value=self.text_enhancer.enabled)
         self.ai_toggle = ctk.CTkLabel(
-            self.main_frame, text="✨", font=("Segoe UI Emoji", 12),
+            self.main_frame, text="✨", font=("Segoe UI Emoji", 13),
             fg_color=self._pill_bg, text_color=self._ai_color()
         )
-        self.ai_toggle.pack(pady=(1, 8))
+        self.ai_toggle.pack(pady=(6, 22))
         self.ai_toggle.bind("<Button-1>", self._on_ai_toggle_click)
+
+        # Click the bar to start/stop recording (distinguished from a drag-to-move).
+        self._press_x = 0
+        self._press_y = 0
 
         # Tracks which monitor the bar is on, so it follows the active screen.
         self._current_monitor_key = None
@@ -614,10 +682,13 @@ class DictFlowApp:
         self.estado_actual = "inactivo"
         # Gate so the global hotkey toggles only once per physical press (the key
         # auto-repeat fires the callback many times while the combo is held).
-        self.hotkey_armed = True
-        self.hotkey = None
-        self._release_hook = None
-        self._registrar_hotkey(self.text_enhancer.get_hotkey())
+        self._hotkeys = {}
+        self._armed = {}
+        self.modo = "dictado"
+        self.hotkey = self.text_enhancer.get_hotkey()
+        self.command_hotkey = self.text_enhancer.get_command_hotkey()
+        self._registrar_hotkey('dict', self.hotkey, self.toggle_grabacion)
+        self._registrar_hotkey('cmd', self.command_hotkey, self.toggle_comando, suppress=True)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.animar_puntos()
         self.setup_context_menu()
@@ -629,21 +700,58 @@ class DictFlowApp:
         for widget in [self.main_frame, self.mode_label, self.canvas]:
             widget.bind("<ButtonPress-1>", self.start_drag)
             widget.bind("<B1-Motion>", self.do_drag)
+            widget.bind("<ButtonRelease-1>", self._on_bar_click)
+
+        # Make the bar a non-activating window so clicking it never steals focus
+        # from the app you are dictating into (otherwise the pasted text lands
+        # nowhere). Windows-only, best-effort.
+        self.root.after(200, self._make_no_activate)
+
+    def _make_no_activate(self):
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_NOACTIVATE = 0x08000000
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            ex = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if not (ex & WS_EX_NOACTIVATE):
+                user32.SetWindowLongW(hwnd, GWL_EXSTYLE, ex | WS_EX_NOACTIVATE)
+                logging.info("Barra configurada como no-activable (no roba el foco).")
+        except Exception as e:
+            logging.warning(f"No se pudo aplicar NOACTIVATE: {e}")
 
     def start_drag(self, event):
         self._offset_x = event.x
         self._offset_y = event.y
+        self._press_x = event.x_root
+        self._press_y = event.y_root
 
     def do_drag(self, event):
         x = self.root.winfo_pointerx() - self._offset_x
         y = self.root.winfo_pointery() - self._offset_y
         self.root.geometry(f"+{x}+{y}")
 
+    def _on_bar_click(self, event=None):
+        """A click on the bar (not a drag) toggles recording: gray=start, red=stop."""
+        moved = (abs(event.x_root - self._press_x) + abs(event.y_root - self._press_y))
+        if moved > 6:  # it was a drag to move the bar
+            return
+        if not self.grabando:
+            logging.info("Iniciando grabación (clic en la barra)...")
+            self.modo = "dictado"
+            self.grabando = True
+            threading.Thread(target=self.procesar_grabacion, daemon=True).start()
+        else:
+            logging.info("Deteniendo grabación (clic en la barra)...")
+            self.grabando = False
+            self.actualizar_estado("transcribiendo", True)
+
     def toggle_text_enhancer(self):
         self.text_enhancer.set_enabled(self.use_enhancer.get())
 
     def _ai_color(self):
-        """Bright when AI enhancement is on, dim when off."""
+        """Gold when AI enhancement is on, dim gray when off."""
         return '#FFD24A' if self.use_enhancer.get() else '#52525B'
 
     def _on_ai_toggle_click(self, event=None):
@@ -742,8 +850,8 @@ class DictFlowApp:
             return
         self._current_monitor_key = key
         try:
-            w = self.root.winfo_width() or 42
-            h = self.root.winfo_height() or 104
+            w = self.root.winfo_width() or 36
+            h = self.root.winfo_height() or 142
             x = right - w - 22
             y = top + ((bottom - top) - h) // 2
             self.root.geometry(f"+{x}+{y}")
@@ -898,16 +1006,45 @@ class DictFlowApp:
             )
             stream.start()
             self.actualizar_estado("grabando", True)
+            self._beep(start=True)
             self.frames = []
             logging.info("Iniciando captura de frames de audio")
+            auto_stop = self.text_enhancer.get_auto_stop_silence()
+            sil_limit = self.text_enhancer.get_silence_seconds()
+            chunk_dur = CHUNK / RATE
+            silence_run = 0.0
+            spoke = False
             while self.grabando:
                 data, overflowed = stream.read(CHUNK)
                 if overflowed:
                     logging.warning("Desbordamiento del buffer de audio (overflow).")
                 chunk_bytes = bytes(data)
                 self.frames.append(chunk_bytes)
-                self.current_level = self._audio_level(chunk_bytes)
+                lvl = self._audio_level(chunk_bytes)
+                self.current_level = lvl
+                # Auto-stop: end the recording after a run of silence once the
+                # user has actually started speaking.
+                if lvl > 0.04:
+                    spoke = True
+                    silence_run = 0.0
+                elif spoke:
+                    silence_run += chunk_dur
+                    if auto_stop and silence_run >= sil_limit:
+                        logging.info("Auto-stop por silencio.")
+                        self.grabando = False
+                        self.root.after(0, self.actualizar_estado, "transcribiendo", True)
+
+            # Capture a short tail so the last words are not clipped (there is
+            # latency between speaking and the audio reaching the buffer).
+            for _ in range(int(0.45 * RATE / CHUNK)):
+                try:
+                    data, _of = stream.read(CHUNK)
+                    self.frames.append(bytes(data))
+                except Exception:
+                    break
+
             self.current_level = 0.0
+            self._beep(start=False)
             logging.info("Grabación detenida.")
         except Exception as e:
             logging.error(f"Error durante la grabación: {e}")
@@ -944,65 +1081,208 @@ class DictFlowApp:
             keyboard.send('ctrl+v')
             self.actualizar_estado("inactivo", False)
 
-    def _rearm_hotkey(self, event=None):
-        """Re-arm the hotkey once the trigger key is released (ignores auto-repeat)."""
-        self.hotkey_armed = True
+    def _beep(self, start=True):
+        """Subtle audio cue on start/stop of recording (Windows)."""
+        if not self.text_enhancer.get_sound_feedback():
+            return
 
-    def _registrar_hotkey(self, hotkey):
-        """(Re)register the global record hotkey and its auto-repeat re-arm hook."""
-        if getattr(self, 'hotkey', None):
+        def play():
             try:
-                keyboard.remove_hotkey(self.hotkey)
+                import winsound
+                winsound.Beep(900 if start else 560, 80)
             except Exception:
                 pass
-        if getattr(self, '_release_hook', None):
+
+        threading.Thread(target=play, daemon=True).start()
+
+    # --- Voice command on selected text ---
+
+    def _capturar_seleccion(self):
+        """Copy the current selection from the focused app; return (old_clip, selection)."""
+        old = ""
+        try:
+            old = pyperclip.paste()
+        except Exception:
+            pass
+        sel = ""
+        try:
+            # Wait until the user releases the hotkey modifiers, otherwise the
+            # Ctrl+C is interpreted as Ctrl+Shift+C and nothing is copied.
+            t0 = time.time()
+            while time.time() - t0 < 1.5:
+                if not (keyboard.is_pressed('ctrl') or keyboard.is_pressed('shift')
+                        or keyboard.is_pressed('alt')):
+                    break
+                time.sleep(0.03)
+            time.sleep(0.06)
+            pyperclip.copy('')  # clear so we can tell if the copy actually worked
+            keyboard.send('ctrl+c')
+            time.sleep(0.22)  # let the copy land
+            sel = pyperclip.paste()
+        except Exception as e:
+            logging.error(f"Error capturando selección: {e}")
+        logging.info(f"Comando: selección capturada ({len(sel or '')} chars)")
+        return old, sel
+
+    def _restaurar_clip(self, old):
+        if old:
             try:
-                keyboard.unhook(self._release_hook)
+                pyperclip.copy(old)
             except Exception:
                 pass
-        self.hotkey = hotkey
-        self.hotkey_armed = True
-        keyboard.add_hotkey(hotkey, self.toggle_grabacion)
-        # Re-arm when the last key of the combo is released.
+
+    def _pegar_y_restaurar(self, result, old_clip):
+        pyperclip.copy(result)
+        keyboard.send('ctrl+v')
+        if old_clip:
+            self.root.after(400, lambda: self._restaurar_clip(old_clip))
+        self.actualizar_estado("inactivo", False)
+
+    def procesar_comando(self):
+        if not self.text_enhancer.is_configured:
+            self.root.after(0, self.show_api_warning_window)
+            self.grabando = False
+            self.actualizar_estado("inactivo", False)
+            return
+
+        old_clip, selected = self._capturar_seleccion()
+        if not selected.strip():
+            self.grabando = False
+            self.root.after(0, self.mostrar_toast, "⚠  Selecciona primero el texto a transformar.")
+            self.actualizar_estado("inactivo", False)
+            self._restaurar_clip(old_clip)
+            return
+
+        self.root.after(0, self.actualizar_contexto, "CMD")
+        audio_file = self.grabar_audio()
+        if not audio_file:
+            self.actualizar_estado("inactivo", False)
+            self._restaurar_clip(old_clip)
+            return
+
+        error = None
+        result = None
+        try:
+            logging.info(f"Transformando texto seleccionado por voz... (sel={selected[:50]!r})")
+            result = self.text_enhancer.transform_with_audio(selected, audio_file)
+            logging.info(f"Comando: resultado ({len(result or '')} chars): {(result or '')[:60]!r}")
+        except Exception as e:
+            error = str(e)
+            logging.error(f"Error en comando de voz: {e}")
+        try:
+            os.unlink(audio_file)
+        except Exception:
+            pass
+
+        if error or not result or not result.strip():
+            self.root.after(0, self.mostrar_toast, "⚠  No se pudo transformar el texto.")
+            self._restaurar_clip(old_clip)
+            self.actualizar_estado("inactivo", False)
+        else:
+            self.history.add_transcription(result, 0.0, True, "command")
+            self.root.after(0, self._pegar_y_restaurar, result, old_clip)
+
+    def _rearm(self, name):
+        """Re-arm a hotkey once its trigger key is released (ignores auto-repeat)."""
+        self._armed[name] = True
+
+    def _registrar_hotkey(self, name, hotkey, callback, suppress=False):
+        """(Re)register a named global hotkey and its auto-repeat re-arm hook.
+
+        suppress=True blocks the combo from reaching other apps (so a command
+        hotkey can reuse a key that an app like VS Code also binds).
+        """
+        old = self._hotkeys.get(name)
+        if old:
+            try:
+                keyboard.remove_hotkey(old['hotkey'])
+            except Exception:
+                pass
+            try:
+                keyboard.unhook(old['release'])
+            except Exception:
+                pass
+        self._armed[name] = True
+        try:
+            keyboard.add_hotkey(hotkey, callback, suppress=suppress)
+        except Exception:
+            keyboard.add_hotkey(hotkey, callback)
         trigger_key = hotkey.split('+')[-1].strip()
-        self._release_hook = keyboard.on_release_key(trigger_key, self._rearm_hotkey)
-        logging.info(f"Atajo de grabación registrado: {hotkey}")
+        release = keyboard.on_release_key(trigger_key, lambda e, n=name: self._rearm(n))
+        self._hotkeys[name] = {'hotkey': hotkey, 'release': release}
+        logging.info(f"Atajo '{name}' registrado: {hotkey}")
 
     def cambiar_hotkey(self, nuevo_hotkey: str) -> bool:
-        """Validate, apply and persist a new recording hotkey. Returns success."""
+        """Validate, apply and persist a new dictation hotkey."""
         nuevo_hotkey = (nuevo_hotkey or "").strip().lower()
         if not nuevo_hotkey:
             return False
         try:
-            keyboard.parse_hotkey(nuevo_hotkey)  # raises on invalid combos
+            keyboard.parse_hotkey(nuevo_hotkey)
         except Exception:
             logging.error(f"Atajo inválido: {nuevo_hotkey}")
             return False
         try:
-            self._registrar_hotkey(nuevo_hotkey)
+            self.hotkey = nuevo_hotkey
+            self._registrar_hotkey('dict', nuevo_hotkey, self.toggle_grabacion)
             self.text_enhancer.set_hotkey(nuevo_hotkey)
             return True
         except Exception as e:
             logging.error(f"No se pudo cambiar el atajo: {e}")
             return False
 
-    def toggle_grabacion(self):
-        # Ignore the auto-repeat fires while the combo stays held down.
-        if not self.hotkey_armed:
-            return
-        self.hotkey_armed = False
+    def cambiar_command_hotkey(self, nuevo_hotkey: str) -> bool:
+        """Validate, apply and persist a new command (transform) hotkey."""
+        nuevo_hotkey = (nuevo_hotkey or "").strip().lower()
+        if not nuevo_hotkey:
+            return False
+        try:
+            keyboard.parse_hotkey(nuevo_hotkey)
+        except Exception:
+            logging.error(f"Atajo inválido: {nuevo_hotkey}")
+            return False
+        try:
+            self.command_hotkey = nuevo_hotkey
+            self._registrar_hotkey('cmd', nuevo_hotkey, self.toggle_comando, suppress=True)
+            self.text_enhancer.set_command_hotkey(nuevo_hotkey)
+            return True
+        except Exception as e:
+            logging.error(f"No se pudo cambiar el atajo de comando: {e}")
+            return False
 
+    def toggle_grabacion(self):
+        if not self._armed.get('dict', True):
+            return
+        self._armed['dict'] = False
         tiempo_actual = time.time()
         if tiempo_actual - self.ultima_pulsacion < self.DEBOUNCE_TIME:
             return
         self.ultima_pulsacion = tiempo_actual
-
         if not self.grabando:
             logging.info("Iniciando grabación...")
+            self.modo = "dictado"
             self.grabando = True
             threading.Thread(target=self.procesar_grabacion, daemon=True).start()
-        else:
+        elif self.modo == "dictado":
             logging.info("Deteniendo grabación...")
+            self.grabando = False
+            self.actualizar_estado("transcribiendo", True)
+
+    def toggle_comando(self):
+        if not self._armed.get('cmd', True):
+            return
+        self._armed['cmd'] = False
+        tiempo_actual = time.time()
+        if tiempo_actual - self.ultima_pulsacion < self.DEBOUNCE_TIME:
+            return
+        self.ultima_pulsacion = tiempo_actual
+        if not self.grabando:
+            logging.info("Iniciando comando de voz...")
+            self.modo = "comando"
+            self.grabando = True
+            threading.Thread(target=self.procesar_comando, daemon=True).start()
+        elif self.modo == "comando":
+            logging.info("Deteniendo comando de voz...")
             self.grabando = False
             self.actualizar_estado("transcribiendo", True)
 
@@ -1193,10 +1473,15 @@ class DictFlowApp:
             logging.info("Cerrando la aplicación...")
             self.grabando = False
             self.animacion_activa = False
-            if getattr(self, 'hotkey', None):
-                keyboard.remove_hotkey(self.hotkey)
-            if getattr(self, '_release_hook', None):
-                keyboard.unhook(self._release_hook)
+            for hk in getattr(self, '_hotkeys', {}).values():
+                try:
+                    keyboard.remove_hotkey(hk['hotkey'])
+                except Exception:
+                    pass
+                try:
+                    keyboard.unhook(hk['release'])
+                except Exception:
+                    pass
 
             if self.settings_window and self.settings_window.winfo_exists():
                 self.settings_window.destroy()
