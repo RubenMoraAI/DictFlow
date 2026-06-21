@@ -17,9 +17,14 @@ $shortcut   = Join-Path $startup "DictFlow.lnk"
 
 if ($Remove) {
     Get-Process DictFlow -ErrorAction SilentlyContinue | Stop-Process -Force
-    if (Test-Path $shortcut) { Remove-Item $shortcut -Force; Write-Host "Removed startup shortcut." }
+    $links = @(
+        $shortcut,
+        (Join-Path ([Environment]::GetFolderPath("Desktop")) "DictFlow.lnk"),
+        (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\DictFlow.lnk")
+    )
+    foreach ($l in $links) { if (Test-Path $l) { Remove-Item $l -Force } }
     if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force; Write-Host "Removed $installDir" }
-    Write-Host "DictFlow autostart uninstalled." -ForegroundColor Green
+    Write-Host "DictFlow uninstalled (shortcuts and installed files removed)." -ForegroundColor Green
     return
 }
 
@@ -39,13 +44,23 @@ if (Test-Path ".\config.json") { Copy-Item ".\config.json" (Join-Path $installDi
 Write-Host "Installed to $installExe"
 
 $ws = New-Object -ComObject WScript.Shell
-$sc = $ws.CreateShortcut($shortcut)
-$sc.TargetPath       = $installExe
-$sc.WorkingDirectory = $installDir
-$sc.IconLocation     = $installExe
-$sc.Description       = "DictFlow voice dictation"
-$sc.Save()
-Write-Host "DictFlow will now start automatically when you log in." -ForegroundColor Green
-Write-Host "To undo:  .\install.ps1 -Remove"
+
+function New-DictFlowShortcut($path) {
+    $s = $ws.CreateShortcut($path)
+    $s.TargetPath       = $installExe
+    $s.WorkingDirectory = $installDir
+    $s.IconLocation     = $installExe
+    $s.Description       = "DictFlow voice dictation"
+    $s.Save()
+}
+
+# Startup (auto-start on login), plus Desktop and Start Menu for easy launching.
+New-DictFlowShortcut $shortcut
+New-DictFlowShortcut (Join-Path ([Environment]::GetFolderPath("Desktop")) "DictFlow.lnk")
+New-DictFlowShortcut (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\DictFlow.lnk")
+
+Write-Host "DictFlow installed. It will start automatically when you log in," -ForegroundColor Green
+Write-Host "and you can launch it from the Desktop or Start Menu shortcuts."
+Write-Host "To undo:  .\scripts\install.ps1 -Remove"
 
 Start-Process $installExe
